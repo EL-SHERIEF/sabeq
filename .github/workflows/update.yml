@@ -13,137 +13,161 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
+  - name: Checkout Repository
+    uses: actions/checkout@v3
+    with:
+      fetch-depth: 0
 
-      - name: Clean Repository
-        run: |
-          echo "Cleaning existing files..."
-          # Remove all files in root except specified ones
-          find . -maxdepth 1 -type f -not -name ".gitignore" -not -name "README.md" -not -name ".git" -not -name ".github" -not -name ".firebaserc" -not -name "firebase.json" -not -name "package-lock.json" -not -name "package.json" -exec rm -rf {} +
-          # Remove all directories in root except specified ones
-          find . -maxdepth 1 -type d -not -name "." -not -name ".git" -not -name ".github" -not -name "firebase-deploy" -not -name "node_modules" -exec rm -rf {} +
-          git add .
-          git commit -m "Cleaned repository before cloning" || echo "No changes to commit"
+  - name: Set Git identity
+    run: |
+      git config --global user.name 'github-actions[bot]'
+      git config --global user.email 'github-actions[bot]@users.noreply.github.com'
 
-      - name: Install wget
-        run: sudo apt-get update && sudo apt-get install -y wget
+  - name: Clean Repository
+    run: |
+      echo "Cleaning existing files..."
+      # Remove all files in root except specified ones
+      find . -maxdepth 1 -type f -not -name ".gitignore" -not -name "README.md" -not -name ".git" -not -name ".github" -not -name ".firebaserc" -not -name "firebase.json" -not -name "package-lock.json" -not -name "package.json" -exec rm -rf {} +
+      # Remove all directories in root except specified ones
+      find . -maxdepth 1 -type d -not -name "." -not -name ".git" -not -name ".github" -not -name "firebase-deploy" -not -name "node_modules" -exec rm -rf {} +
+      git add .
+      git commit -m "Cleaned repository before cloning" || echo "No changes to commit"
 
-      - name: Clone Sabeq Framer Site (Root)
-        run: |
-          echo "Cloning Sabeq site..."
-          wget \
-            --recursive \
-            --page-requisites \
-            --html-extension \
-            --convert-links \
-            --domains=sabeq.framer.website \
-            --no-parent \
-            --directory-prefix=./ \
-            https://sabeq.framer.website/
-          # Move files to root and clean up
-          mv sabeq.framer.website/* ./
-          rm -rf sabeq.framer.website
+  - name: Install wget
+    run: sudo apt-get update && sudo apt-get install -y wget
 
-      - name: Post-Process HTML for Sabeq (Root)
-        run: |
-          find . -type f -name "*.html" | while read -r file; do
-            if [ "$file" = "./index.html" ]; then
-              canonical_url="https://sabeq.pages.dev/"
-            else
-              relative_path=$(echo "$file" | sed 's/^\.\///')
-              canonical_url="https://sabeq.pages.dev/$relative_path"
-            fi
-            sed -i \
-              -e 's/<html>/<html dir="rtl" lang="ar"/' \
-              -e '/<head>/a <meta name="robots" content="index, follow" />' \
-              -e "/<head>/a <link rel=\"canonical\" href=\"$canonical_url\" />" \
-              -e '/<head>/a <link rel="alternate" hreflang="ar" href="https://sabeq.pages.dev/'"$relative_path"'" />' \
-              -e '/<head>/a <link rel="alternate" hreflang="x-default" href="https://sabeq.pages.dev/" />' \
-              -e '/<head>/a <script type="application/ld+json">{"@context":"https://schema.org","@type":"Organization","name":"Sabeq","description":"Sabeq هو متجرك المفضل لخدمات المتاجر الإلكترونية، يقدم تصميم متاجر احترافية، خدمات تحسين محركات البحث (SEO)، وهوية بصرية للمتاجر على منصات مثل سلة، زد، وشوبيفاي.","url":"https://sabeq.pages.dev/","sameAs":["https://x.com/SabeqApp"]}<\/script>' \
-              "$file"
-          done
+  - name: Clone Sabeq Framer Site (Root)
+    run: |
+      echo "Cloning Sabeq site..."
+      # Run wget but don't fail immediately on non-zero exit; validate afterwards.
+      wget \
+        --recursive \
+        --page-requisites \
+        --html-extension \
+        --convert-links \
+        --domains=sabeq.framer.website \
+        --no-parent \
+        --directory-prefix=./ \
+        --wait=1 \
+        --tries=3 \
+        --retry-connrefused \
+        https://sabeq.framer.website/ || echo "wget finished with non-zero exit code; continuing to validation"
 
-      - name: Add 404 Fallback for Backlinks
-        run: |
-          cat << 'EOF' > 404.html
-          <!DOCTYPE html>
-          <html>
-          <head>
-            <meta charset="UTF-8">
-            <title>404 - Page Not Found</title>
-            <script>
-              (function() {
-                var path = window.location.pathname;
-                if (!path.endsWith('.html') && !path.includes('.')) {
-                  window.location.replace(path.replace(/\/$/, '') + '.html');
-                }
-              })();
-            </script>
-          </head>
-          <body>
-            <p>Redirecting...</p>
-          </body>
-          </html>
-          EOF
+      # If the download created the target directory with HTML files, move them to repo root.
+      if [ -d "sabeq.framer.website" ] && [ "$(find sabeq.framer.website -type f -name '*.html' | wc -l)" -gt 0 ]; then
+        # Ensure hidden files are moved too
+        shopt -s dotglob || true
+        mv -f sabeq.framer.website/* ./
+        rm -rf sabeq.framer.website
+      else
+        echo "sabeq.framer.website not populated; checking for existing index.html in repo root..."
+        if [ ! -f "./index.html" ]; then
+          echo "Error: No site files downloaded and index.html missing. Aborting."
+          exit 1
+        else
+          echo "index.html exists in repo root; proceeding."
+        fi
+      fi
 
-      - name: Generate Sitemap, Robots, and RSS
-        run: |
-          echo '<?xml version="1.0" encoding="UTF-8"?>' > sitemap.xml
-          echo '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' >> sitemap.xml
-          find . -type f -name "*.html" | while read -r file; do
-            url="https://sabeq.pages.dev/${file#./}"
-            lastmod=$(date -u -d "now" +%Y-%m-%dT%H:%M:%SZ)
-            priority=$(if [[ "$file" == "./index.html" ]]; then echo "1.0"; else echo "0.8"; fi)
-            echo "  <url><loc>$url</loc><lastmod>$lastmod</lastmod><changefreq>daily</changefreq><priority>$priority</priority></url>" >> sitemap.xml
-          done
-          echo '</urlset>' >> sitemap.xml
+  - name: Post-Process HTML for Sabeq (Root)
+    run: |
+      find . -type f -name "*.html" | while read -r file; do
+        if [ "$file" = "./index.html" ]; then
+          canonical_url="https://sabeq.pages.dev/"
+          relative_path=""
+        else
+          relative_path=$(echo "$file" | sed 's/^\.\///')
+          canonical_url="https://sabeq.pages.dev/$relative_path"
+        fi
+        sed -i \
+          -e 's/<html>/<html dir="rtl" lang="ar"/' \
+          -e '/<head>/a <meta name="robots" content="index, follow" />' \
+          -e "/<head>/a <link rel=\"canonical\" href=\"$canonical_url\" />" \
+          -e '/<head>/a <link rel="alternate" hreflang="ar" href="https://sabeq.pages.dev/'"$relative_path"'" />' \
+          -e '/<head>/a <link rel="alternate" hreflang="x-default" href="https://sabeq.pages.dev/" />' \
+          -e '/<head>/a <script type="application/ld+json">{"@context":"https://schema.org","@type":"Organization","name":"Sabeq","description":"Sabeq هو متجرك المفضل لخدمات المتاجر الإلكترونية، يقدم تصميم متاجر احترافية، خدمات تحسين محركات البحث (SEO)، وهوية بصرية للمتاجر على منصات مثل سلة، زد، وشوبيفاي.","url":"https://sabeq.pages.dev/","sameAs":["https://x.com/SabeqApp"]}<\/script>' \
+          "$file"
+      done
 
-          echo "User-agent: *" > robots.txt
-          echo "Allow: /" >> robots.txt
-          echo "Disallow: /*?*" >> robots.txt
-          echo "Sitemap: https://sabeq.pages.dev/sitemap.xml" >> robots.txt
-          if [ -f robots.txt ]; then
-            echo "robots.txt generated:"
-            cat robots.txt
-          else
-            echo "Failed to generate robots.txt" >&2
-            exit 1
-          fi
+  - name: Add 404 Fallback for Backlinks
+    run: |
+      cat << 'EOF' > 404.html
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <title>404 - Page Not Found</title>
+        <script>
+          (function() {
+            var path = window.location.pathname;
+            if (!path.endsWith('.html') && !path.includes('.')) {
+              window.location.replace(path.replace(/\/$/, '') + '.html');
+            }
+          })();
+        </script>
+      </head>
+      <body>
+        <p>Redirecting...</p>
+      </body>
+      </html>
+      EOF
 
-          echo '<?xml version="1.0" encoding="UTF-8"?>' > rss.xml
-          echo '<rss version="2.0"><channel>' >> rss.xml
-          echo "<title>Maintain Sabeq Site</title><link>https://sabeq.pages.dev</link><description>Automated updates for Sabeq e-commerce services site maintenance</description>" >> rss.xml
-          find . -type f -name "*.html" | while read -r file; do
-            url="https://sabeq.pages.dev/${file#./}"
-            echo "<item><title>Page Update: ${file#./}</title><link>$url</link><pubDate>$(date -u -R)</pubDate><description>Updated page at ${file#./}</description></item>" >> rss.xml
-          done
-          echo '</channel></rss>' >> rss.xml
+  - name: Generate Sitemap, Robots, and RSS
+    run: |
+      echo '<?xml version="1.0" encoding="UTF-8"?>' > sitemap.xml
+      echo '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' >> sitemap.xml
+      find . -type f -name "*.html" | while read -r file; do
+        url="https://sabeq.pages.dev/${file#./}"
+        lastmod=$(date -u -d "now" +%Y-%m-%dT%H:%M:%SZ)
+        priority=$(if [[ "$file" == "./index.html" ]]; then echo "1.0"; else echo "0.8"; fi)
+        echo "  <url><loc>$url</loc><lastmod>$lastmod</lastmod><changefreq>daily</changefreq><priority>$priority</priority></url>" >> sitemap.xml
+      done
+      echo '</urlset>' >> sitemap.xml
 
-      - name: Validate Cloning
-        run: |
-          if [ ! -f "index.html" ]; then
-            echo "Error: Core file (index.html) missing!"
-            exit 1
-          fi
-          if find . -name "*.html" | xargs -n 1 grep -l 'href="/[^"]*[^.html]"' | grep -q .; then
-            echo "Error: Found internal links without .html!"
-            exit 1
-          fi
-          echo "Cloning validated successfully."
+      echo "User-agent: *" > robots.txt
+      echo "Allow: /" >> robots.txt
+      echo "Disallow: /*?*" >> robots.txt
+      echo "Sitemap: https://sabeq.pages.dev/sitemap.xml" >> robots.txt
+      if [ -f robots.txt ]; then
+        echo "robots.txt generated:"
+        cat robots.txt
+      else
+        echo "Failed to generate robots.txt" >&2
+        exit 1
+      fi
 
-      - name: Commit and Push Changes
-        env:
-          ACTIONS_PAT: ${{ secrets.ACTIONS_PAT }}
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email 'github-actions[bot]@users.noreply.github.com'
-          git add .
-          if git diff --cached --quiet; then
-            echo "No changes to commit."
-          else
-            git commit -m "Automated update: Cloned Sabeq site with wget"
-            git push https://x-access-token:${{ secrets.ACTIONS_PAT }}@github.com/${{ github.repository }}.git HEAD:main
-          fi
+      echo '<?xml version="1.0" encoding="UTF-8"?>' > rss.xml
+      echo '<rss version="2.0"><channel>' >> rss.xml
+      echo "<title>Maintain Sabeq Site</title><link>https://sabeq.pages.dev</link><description>Automated updates for Sabeq e-commerce services site maintenance</description>" >> rss.xml
+      find . -type f -name "*.html" | while read -r file; do
+        url="https://sabeq.pages.dev/${file#./}"
+        echo "<item><title>Page Update: ${file#./}</title><link>$url</link><pubDate>$(date -u -R)</pubDate><description>Updated page at ${file#./}</description></item>" >> rss.xml
+      done
+      echo '</channel></rss>' >> rss.xml
+
+  - name: Validate Cloning
+    run: |
+      if [ ! -f "index.html" ]; then
+        echo "Error: Core file (index.html) missing!"
+        exit 1
+      fi
+      if find . -name "*.html" | xargs -r -n 1 grep -l 'href="/[^"]*[^.html]"' | grep -q .; then
+        echo "Error: Found internal links without .html!"
+        exit 1
+      fi
+      echo "Cloning validated successfully."
+
+  - name: Commit and Push Changes
+    env:
+      ACTIONS_PAT: ${{ secrets.ACTIONS_PAT }}
+    run: |
+      # identity already configured globally, but set again locally to be safe
+      git config user.name 'github-actions[bot]'
+      git config user.email 'github-actions[bot]@users.noreply.github.com'
+      git add .
+      if git diff --cached --quiet; then
+        echo "No changes to commit."
+      else
+        git commit -m "Automated update: Cloned Sabeq site with wget"
+        git push https://x-access-token:${{ secrets.ACTIONS_PAT }}@github.com/${{ github.repository }}.git HEAD:main
+      fi
